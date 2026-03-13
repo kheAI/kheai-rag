@@ -1,35 +1,14 @@
 version: '3.8'
 
 services:
-  brain:
-    image: ghcr.io/ggerganov/llama.cpp:server
-    container_name: kheai-brain
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./llama.cpp/models:/models
-    command: >
-      -m /models/Qwen3.5-0.8B-Q4_0.gguf
-      --port 8080 --host 0.0.0.0 --embedding
-      -t 4 -c 4096 --api-key local-pi-key
-    restart: always
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://192.168.0.166:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
   logic:
-    build: ./kheai-rag
+    build: .  
     container_name: kheai-logic
     ports:
       - "3000:3000"
     volumes:
-      - ./kheai-rag/knowledge:/app/knowledge
+      - ./knowledge:/app/knowledge 
     environment:
-      - LLAMA_API=http://brain:8080/v1
+      - LLAMA_API=http://192.168.0.166:8080/v1
       - API_KEY=local-pi-key
-    depends_on:
-      brain:
-        condition: service_healthy
     restart: always

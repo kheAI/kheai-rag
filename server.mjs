@@ -22,7 +22,7 @@ const db = await create({
 });
 
 // --- 2. THE WATCHDOG (Ingestion & Pruning) ---
-if (!await fs.access(KNOWLEDGE_DIR).catch(() => false)) await fs.mkdir(KNOWLEDGE_DIR);
+await fs.mkdir(KNOWLEDGE_DIR, { recursive: true });
 
 chokidar.watch(KNOWLEDGE_DIR).on('all', async (event, filePath) => {
     const fileName = path.basename(filePath);
