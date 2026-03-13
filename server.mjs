@@ -12,6 +12,7 @@ const td = new TurndownService();
 const KNOWLEDGE_DIR = './knowledge';
 const LLAMA_API = process.env.LLAMA_API || 'http://192.168.0.166:8080/v1';
 const API_KEY = process.env.API_KEY || 'local-pi-key';
+const STOP_WORDS = new Set(['hello', 'hi', 'yo', 'hey', 'thanks', 'bye', 'ok', 'yes', 'no']);
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -25,27 +26,25 @@ const db = await create({
 await fs.mkdir(KNOWLEDGE_DIR, { recursive: true });
 
 chokidar.watch(KNOWLEDGE_DIR).on('all', async (event, filePath) => {
-    const fileName = path.basename(filePath);
+    if (event !== 'add' && event !== 'change') return;
     if (path.extname(filePath) !== '.md') return;
 
-    if (event === 'add' || event === 'change') {
-        // Inside chokidar.watch...
-        const content = await fs.readFile(filePath, 'utf-8');
-        // Lower the threshold to 20 characters and trim better
-        const chunks = content.split('\n').filter(c => c.trim().length > 20); 
-        for (const chunk of chunks) {
-            await insert(db, { text: chunk.trim(), source: fileName });
-        }
-        console.log(`✅ Indexed: ${fileName}`);
-    } 
-    else if (event === 'unlink') {
-        // Find and purge deleted knowledge
-        const allDocs = await search(db, { where: { source: fileName }, limit: 1000 });
-        for (const hit of allDocs.hits) {
-            await remove(db, hit.id);
-        }
-        console.log(`🗑️ Memory Purged: ${fileName}`);
+    const content = await fs.readFile(filePath, 'utf-8');
+    
+    // 🧹 Aggressive Filter: Remove instructional meta-data before it hits the DB
+    const chunks = content.split(/\n\s*\n/).filter(c => {
+        const t = c.toLowerCase();
+        const isInstructional = t.includes("decision matrix") || t.includes("policy") || t.includes("answer strictly");
+        return !isInstructional && t.trim().length > 30;
+    });
+
+    // Clear old data for this file before re-indexing (Optional but recommended)
+    // You can just manually 'rm knowledge/*.md' and restart for a fresh start
+    
+    for (const chunk of chunks) {
+        await insert(db, { text: chunk.trim(), source: path.basename(filePath) });
     }
+    console.log(`✅ Clean Index: ${path.basename(filePath)} (${chunks.length} factual chunks)`);
 });
 
 // --- 3. THE SCRAPER (Web Sense) ---
@@ -89,35 +88,55 @@ app.delete('/api/knowledge/:filename', async (req, res) => {
 // --- 5. THE RAG CHAT (Logic Engine) ---
 app.post('/api/chat', async (req, res) => {
     const { message } = req.body;
+    const lowerMsg = message.toLowerCase().trim();
+    
     try {
+        // 1. Identify "Social" vs "Technical"
+        const isGreeting = STOP_WORDS.has(lowerMsg) || lowerMsg === "yo" || message.length < 4;
+        
+        if (isGreeting) {
+            console.log(`💬 Chat Mode: ${message}`);
+            const chatRes = await axios.post(`${LLAMA_API}/chat/completions`, {
+                model: "qwen",
+                messages: [{ role: "user", content: `You are Kai's local AI, kheAI. Say hi: ${message}` }],
+                temperature: 0.8
+            }, { headers: { 'Authorization': `Bearer ${API_KEY}` } });
+            return res.json({ answer: chatRes.data.choices[0].message.content });
+        }
+
+        // 2. Technical RAG Mode
+        const cleanQuery = message.replace(/what is|tell me about|do you know|compare|who is/gi, '').trim();
         const sResult = await search(db, { 
-            term: message, 
-            limit: 5, // Increased limit for better coverage
-            tolerance: 2 
+            term: cleanQuery, 
+            limit: 5,
+            tolerance: 1
         });
-        
+
         const context = sResult.hits.map(h => h.document.text).join('\n---\n');
-        
-        // Debugging: See what is actually being found in terminal
-        console.log(`🔍 Search for "${message}" found ${sResult.count} chunks.`);
+        console.log(`🎯 RAG: Found ${sResult.count} chunks for "${cleanQuery}"`);
 
-        const systemContent = `You are a local AI. Answer strictly using the context provided below. 
-If the answer is not in the context, say "RECOURSE".
+        // THE "MISSION" PROMPT
+        const prompt = `### MISSION
+Answer the User's question using ONLY the data in the DATA VAULT. 
+If the information is missing, say "I don't have that data in my memory bank yet."
 
-CONTEXT:
-${context || "No context found in memory."}`;
+### DATA VAULT
+${context || "NO DATA FOUND"}
+
+### USER QUESTION
+${message}
+
+### YOUR RESPONSE:`;
 
         const aiRes = await axios.post(`${LLAMA_API}/chat/completions`, {
-            model: "qwen", // Ensure this matches your llama-server config
-            messages: [
-                { role: "system", content: systemContent },
-                { role: "user", content: message }
-            ],
-            temperature: 0.0, // Iron discipline: no creativity
-            max_tokens: 150
+            model: "qwen",
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.0,
+            max_tokens: 200
         }, { headers: { 'Authorization': `Bearer ${API_KEY}` } });
 
         res.json({ answer: aiRes.data.choices[0].message.content, context });
+
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: "Brain connection lost." });
