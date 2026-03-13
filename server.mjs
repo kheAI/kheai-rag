@@ -10,7 +10,7 @@ import TurndownService from 'turndown';
 const app = express();
 const td = new TurndownService();
 const KNOWLEDGE_DIR = './knowledge';
-const LLAMA_API = process.env.LLAMA_API || 'http://192.168.0.166/:8080/v1';
+const LLAMA_API = process.env.LLAMA_API || 'http://192.168.0.166:8080/v1';
 const API_KEY = process.env.API_KEY || 'local-pi-key';
 
 app.use(express.json());
@@ -29,8 +29,10 @@ chokidar.watch(KNOWLEDGE_DIR).on('all', async (event, filePath) => {
     if (path.extname(filePath) !== '.md') return;
 
     if (event === 'add' || event === 'change') {
+        // Inside chokidar.watch...
         const content = await fs.readFile(filePath, 'utf-8');
-        const chunks = content.split('\n\n').filter(c => c.trim().length > 50);
+        // Lower the threshold to 20 characters and trim better
+        const chunks = content.split('\n').filter(c => c.trim().length > 20); 
         for (const chunk of chunks) {
             await insert(db, { text: chunk.trim(), source: fileName });
         }
@@ -88,19 +90,36 @@ app.delete('/api/knowledge/:filename', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
     const { message } = req.body;
     try {
-        const sResult = await search(db, { term: message, limit: 3 });
+        const sResult = await search(db, { 
+            term: message, 
+            limit: 5, // Increased limit for better coverage
+            tolerance: 2 
+        });
+        
         const context = sResult.hits.map(h => h.document.text).join('\n---\n');
         
-        const prompt = `CONTEXT:\n${context}\n\nUSER: ${message}\n\nINSTRUCTION: Answer strictly using context. If unknown, say RECOURSE.`;
-        
+        // Debugging: See what is actually being found in terminal
+        console.log(`🔍 Search for "${message}" found ${sResult.count} chunks.`);
+
+        const systemContent = `You are a local AI. Answer strictly using the context provided below. 
+If the answer is not in the context, say "RECOURSE".
+
+CONTEXT:
+${context || "No context found in memory."}`;
+
         const aiRes = await axios.post(`${LLAMA_API}/chat/completions`, {
-            model: "qwen3.5-0.8b",
-            messages: [{ role: "system", content: "Logic engine. Concise." }, { role: "user", content: prompt }],
-            temperature: 0.0
+            model: "qwen", // Ensure this matches your llama-server config
+            messages: [
+                { role: "system", content: systemContent },
+                { role: "user", content: message }
+            ],
+            temperature: 0.0, // Iron discipline: no creativity
+            max_tokens: 150
         }, { headers: { 'Authorization': `Bearer ${API_KEY}` } });
 
         res.json({ answer: aiRes.data.choices[0].message.content, context });
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: "Brain connection lost." });
     }
 });
