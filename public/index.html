@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>kheAI Capybara Dashboard</title>
+    <style>
+        body { background: #0a0a0a; color: #00ff41; font-family: monospace; padding: 20px; }
+        .box { background: #111; border: 1px solid #333; padding: 20px; border-radius: 4px; margin-bottom: 10px; }
+        input { background: #000; color: #00ff41; border: 1px solid #00ff41; padding: 10px; width: 70%; }
+        button { background: #00ff41; color: #000; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; }
+        #log { height: 300px; overflow-y: auto; border-bottom: 1px solid #333; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h3>WEB INGESTION</h3>
+        <input type="text" id="url" placeholder="https://...">
+        <button onclick="learn()">LEARN</button>
+    </div>
+
+    <div class="box">
+        <h3>MEMORY BANK (./knowledge)</h3>
+        <div id="fileList" style="font-size: 0.9em; color: #888;">Loading memory...</div>
+    </div>
+
+    <div class="box">
+        <div id="log">SYSTEM READY...</div>
+        <input type="text" id="msg" placeholder="Ask anything..." onkeydown="if(event.key==='Enter') chat()">
+        <button onclick="chat()">EXECUTE</button>
+    </div>
+
+    <script>
+        async function refreshKnowledge() {
+            const res = await fetch('/api/knowledge');
+            const data = await res.json();
+            const listDiv = document.getElementById('fileList');
+            if (data.files.length === 0) return listDiv.innerHTML = "Brain is empty.";
+            
+            listDiv.innerHTML = data.files.map(file => `
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px; border-bottom: 1px solid #222; padding: 5px 0;">
+                    <span>📄 ${file}</span>
+                    <button onclick="forget('${file}')" style="background: #cf6679; padding: 2px 8px; font-size: 10px;">FORGET</button>
+                </div>
+            `).join('');
+        }
+
+        async function forget(filename) {
+            if (!confirm(`Purge memory of: ${filename}?`)) return;
+            await fetch(`/api/knowledge/${filename}`, { method: 'DELETE' });
+            refreshKnowledge(); 
+        }
+
+        async function learn() {
+            const url = document.getElementById('url').value;
+            if(!url) return;
+            await fetch('/api/learn-url', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url}) });
+            document.getElementById('url').value = '';
+            setTimeout(refreshKnowledge, 1000); 
+        }
+
+        async function chat() {
+            const input = document.getElementById('msg');
+            const log = document.getElementById('log');
+            const userText = input.value;
+            if(!userText) return;
+
+            log.innerHTML += `<p><b>USER:</b> ${userText}</p>`;
+            input.value = '';
+
+            const res = await fetch('/api/chat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: userText}) });
+            const data = await res.json();
+            log.innerHTML += `<p><b>kheAI:</b> ${data.answer}</p>`;
+            log.scrollTop = log.scrollHeight;
+        }
+
+        refreshKnowledge();
+    </script>
+</body>
+</html>
